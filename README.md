@@ -31,15 +31,19 @@ Set FLICKR_API_KEY and FLICKR_SHARED_SECRET environment variables with your
     export FLICKR_API_KEY="... Your API key ..."
     export FLICKR_SHARED_SECRET="... Your shared secret ..."
 
-Set FLICKR_ACCESS_TOKEN and FLICKR_ACCESS_SECRET environment variables with your
-with your `access_token` and `access_secret` (you get these with
-[flickr_auth.rb](flickr_auth.rb))
+You must generate an access token and secret key so flickr_download.rb
+can access the Flickr API before. This is achieved by running [flickr_auth.rb](flickr_auth.rb)
+and following the instructions:
+     
+    ruby flickr_auth.rb
 
-    # Get your access_token & access_secret by running ruby flick_auth.rb
+Then set FLICKR_ACCESS_TOKEN and FLICKR_ACCESS_SECRET environment variables with the results of
+running flickr_auth.rb:
+
     export FLICKR_ACCESS_TOKEN="... Your access token ..."
     export FLICKR_ACCESS_SECRET="... Your access secret ..."
 
-Run the script, specifying your photostream, photoset or favorites URLs as the argument:
+Finally, run flickr_download.rb, specifying your photostream, photoset or favorites URLs as the argument:
 
     ruby flickr_download.rb http://www.flickr.com/groups/LondonAFOLs/pool
 
@@ -50,7 +54,7 @@ different directory, you can pass its name as an optional `-d` argument:
     ruby flickr_download.rb http://www.flickr.com/groups/LondonAFOLs/pool -d ~/Pictures/LondonAFOLs
 
 Instead of downloading Flickr images returned live from querying the Flickr API, you can instead
-write them to an output file (one URL per line) with the `-o` argument. This allows you to edit and 
+write the image URLs to a file (one image URL per line) with the `-o` argument. This allows you to edit and 
 amend the URLs before downloading them. 
 
     ruby flickr_download.rb -o urllist.txt
@@ -88,4 +92,4 @@ Authors
 -------
 
 * **Dương Tiến Thuận** ([@mrtuxhdb](https://github.com/mrtuxhdb))
-* **Michael Studmabn** ([@mrbaboo](https://github.com/mrbaboo))
+* **Michael Studman** ([@mrbaboo](https://github.com/mrbaboo))
