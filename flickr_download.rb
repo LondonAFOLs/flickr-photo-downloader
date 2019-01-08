@@ -1,11 +1,10 @@
 #!/usr/bin/env ruby
-# Filename: flick-photo-downloader.rb
+# Filename: flickr_download.rb
 # Description: Easily download all the photos from a flickr: group pool,
 #              photostream, photosets and favorites
 
 require 'rubygems'
 require 'bundler'
-require 'json'
 require 'yaml'
 require 'fileutils'
 require 'optparse'
@@ -17,8 +16,9 @@ FlickRaw.shared_secret = ENV['FLICKR_SHARED_SECRET'] || fail("Environment variab
 # Get your access_token & access_secret with flick_auth.rb
 flickr.access_token    = ENV['FLICKR_ACCESS_TOKEN']  || fail("Environment variable FLICKR_ACCESS_TOKEN is required - run flickr_auth.rb to generate")
 flickr.access_secret   = ENV['FLICKR_ACCESS_SECRET'] || fail("Environment variable FLICKR_ACCESS_SECRET is required - run flickr_auth.rb to generate")
-
+# Use a proxy (e.g. for debugging or inspecting the payload)
 FlickRaw.proxy = ENV['HTTPS_PROXY']
+# Disable cert checking (e.g. when using a proxy with a self-signed cert)
 FlickRaw.check_certificate = ENV['HTTPS_CHECK_CERT'].nil? || !ENV['HTTPS_CHECK_CERT'].downcase == "false"
 
 
@@ -146,6 +146,7 @@ def process(photos)
   else
     download(photos)
   end
+  photos.clear
 end
 
 def best_url(photo)
@@ -199,56 +200,56 @@ $url_list.each do |url|
     ##### Get photolist of user #####
     if match_group2.nil?
       # flickr.people.lookUpUser(:url => url)
-      f_user         = flickr.people.getInfo(:url => url)
-      f_user_id      = f_user["id"]
-      f_photo_count  = f_user["photos"]["count"]
-      f_page_count   = (f_photo_count.to_i / 500.0).ceil
-      f_current_page = 1
+      user         = flickr.people.getInfo(:url => url)
+      user_id      = user["id"]
+      user_photo_count  = user["photos"]["count"]
+      user_page_count   = (user_photo_count.to_i / 500.0).ceil
+      user_current_page = 1
 
-      while f_current_page <= f_page_count
-        photo_list = flickr.people.getPhotos( :user_id => f_user_id,
+      while user_current_page <= user_page_count
+        photos_page = flickr.people.getPhotos(:user_id => user_id,
                                               :safe_search => "3",
-                                              :extras => "url_o",
-                                              :page => f_current_page.to_s,
+                                              :extras => "url_o,date_upload,date_taken,owner_name,tags",
+                                              :page => user_current_page,
                                               :per_page => "500")
-        photo_list.each do |photo|
+        photos_page.each do |photo|
           photos_outstanding.push(photo)
         end
 
-        f_current_page += 1
         process(photos_outstanding)
-        photos_outstanding.clear
+
+        user_current_page += 1
       end
 
     ##### Get photo list of photoset #####
     elsif match_group2.eql?("sets") and match_group4.nil?
-      f_photoset       = flickr.photosets.getInfo(:photoset_id => match_group3)
-      f_photoset_id    = f_photoset["id"]
-      f_photoset_count = f_photoset["photos"]
-      f_page_count     = (f_photoset_count.to_i / 500.0).ceil
-      f_current_page   = 1
+      photoset       = flickr.photosets.getInfo(:photoset_id => match_group3)
+      photoset_id    = photoset["id"]
+      photoset_count = photoset["photos"]
+      photoset_page_count     = (photoset_count.to_i / 500.0).ceil
+      photoset_current_page   = 1
 
-      while f_current_page <= f_page_count
-        photo_list = flickr.photosets.getPhotos(:photoset_id => f_photoset_id,
-                                                :extras => "url_o",
-                                                :page => f_current_page.to_s,
+      while photoset_current_page <= photoset_page_count
+        photos_page = flickr.photosets.getPhotos(:photoset_id => photoset_photoset_id,
+                                                :extras => "url_o,date_upload,date_taken,owner_name,tags",
+                                                :page => photoset_current_page,
                                                 :per_page => "500")
-        photo_list = photo_list["photo"]
+        photos_page = photos_page["photo"]
 
-        photo_list.each do |photo|
+        photos_page.each do |photo|
           photos_outstanding.push(photo)
         end
 
-        f_current_page += 1
         process(photos_outstanding)
-        photos_outstanding.clear
+
+        photoset_current_page += 1
       end
 
     ##### Get photo list of user favorites #####
     elsif match_group2.eql?("favorites")
-      fav_user         = flickr.people.getInfo(:url => url)
-      fav_user_id      = fav_user["id"]
-      fav_photo_count  = flickr.favorites.getList(:user_id => fav_user_id,
+      user         = flickr.people.getInfo(:url => url)
+      user_id      = user["id"]
+      fav_photo_count  = flickr.favorites.getList(:user_id => user_id,
                                                   :per_page => "1",
                                                   :page => "1")["total"]
       fav_page_count   = (fav_photo_count.to_i / 500.0).ceil
@@ -257,17 +258,17 @@ $url_list.each do |url|
       puts "#{fav_photo_count.to_i} favourites"
       while fav_current_page <= fav_page_count
         puts "Getting favourite page #{fav_current_page}"
-        photo_list = flickr.favorites.getList(:user_id => fav_user_id,
+        photos_page = flickr.favorites.getList(:user_id => user_id,
                                               :extras => "url_o,date_upload,date_taken,owner_name,tags",
-                                              :page => fav_current_page.to_s,
+                                              :page => fav_current_page,
                                               :per_page => "500")
-        photo_list.each do |photo|
+        photos_page.each do |photo|
             photos_outstanding.push(photo)
         end
         
-        fav_current_page += 1
         process(photos_outstanding)
-        photos_outstanding.clear
+
+        fav_current_page += 1
       end
 
     ##### Get individual photo url #####
@@ -283,27 +284,27 @@ $url_list.each do |url|
     end
   ##### Get individual photo url #####
   elsif match_group1.eql?("groups")
-    g_group        = flickr.urls.lookupGroup(:url => url)
-    g_group_id     = g_group["id"]
-    g_group_name   = g_group["groupname"]
-    g_photo_count  = flickr.groups.getInfo(:group_id => g_group_id)["pool_count"]
-    g_page_count   = (g_photo_count.to_i / 500.0).ceil
-    g_current_page = 1
+    group        = flickr.urls.lookupGroup(:url => url)
+    group_id     = group["id"]
+    group_name   = group["groupname"]
+    group_photo_count  = flickr.groups.getInfo(:group_id => group_id)["pool_count"]
+    group_page_count   = (group_photo_count.to_i / 500.0).ceil
+    group_current_page = 1
 
-    while g_current_page <= g_page_count
-      photo_list = flickr.groups.pools.getPhotos( :group_id => g_group_id,
-                                                  :extras => "url_o",
-                                                  :page => g_current_page,
+    while group_current_page <= group_page_count
+      photos_page = flickr.groups.pools.getPhotos(:group_id => group_id,
+                                                  :extras => "url_o,date_upload,date_taken,owner_name,tags",
+                                                  :page => group_current_page,
                                                   :per_page => "500")
-      photo_list = photo_list["photo"]
+      photos_page = photos_page["photo"]
 
-      photo_list.each do |photo|
+      photos_page.each do |photo|
         photos_outstanding.push(photo)
       end
 
-      g_current_page += 1
       process(photos_outstanding)
-      photos_outstanding.clear
+
+      group_current_page += 1
     end
 
   end
