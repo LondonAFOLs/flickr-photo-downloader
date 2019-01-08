@@ -5,17 +5,22 @@
 
 require 'rubygems'
 require 'bundler'
+require 'json'
+require 'yaml'
 require 'fileutils'
 require 'optparse'
 Bundler.require
 
 # Get your API Key: https://secure.flickr.com/services/apps/create/apply
-FlickRaw.api_key       = "... Your API key ..."
-FlickRaw.shared_secret = "... Your shared secret ..."
-
+FlickRaw.api_key       = ENV['FLICKR_API_KEY']       || fail("Environment variable FLICKR_API_KEY is required")
+FlickRaw.shared_secret = ENV['FLICKR_SHARED_SECRET'] || fail("Environment variable FLICKR_SHARED_SECRET is required")
 # Get your access_token & access_secret with flick_auth.rb
-flickr.access_token    = "... Your access token ..."
-flickr.access_secret   = "... Your access secret ..."
+flickr.access_token    = ENV['FLICKR_ACCESS_TOKEN']  || fail("Environment variable FLICKR_ACCESS_TOKEN is required - run flickr_auth.rb to generate")
+flickr.access_secret   = ENV['FLICKR_ACCESS_SECRET'] || fail("Environment variable FLICKR_ACCESS_SECRET is required - run flickr_auth.rb to generate")
+
+FlickRaw.proxy = ENV['HTTPS_PROXY']
+FlickRaw.check_certificate = ENV['HTTPS_CHECK_CERT'].nil? || !ENV['HTTPS_CHECK_CERT'].downcase == "false"
+
 
 begin
   login = flickr.test.login
@@ -82,28 +87,50 @@ if $output_file
   $f_urllist = File.open(File.expand_path($output_file), "a+")
 end
 
-def download(image_urls)
+def download(photos)
   concurrency = 8
 
-  puts "Downloading #{image_urls.count} photos from flickr with concurrency=#{concurrency} ..."
+  puts "Downloading #{photos.count} photos from flickr with concurrency=#{concurrency} ..."
   FileUtils.mkdir_p($directory)
 
-  image_urls.each_slice(concurrency).each do |group|
+  photos.each_slice(concurrency).each do |group|
     threads = []
-    group.each do |url|
+    group.each do |photo|
       threads << Thread.new {
+        attempt = 0
+
+        url = best_url(photo)
+        if url.nil?
+          puts "Image URL not found for #{photo}"
+          return
+        end
+        date_faved = photo["date_faved"]
+
+        filename = "#{date_faved}@#{File.basename(url.to_s.split('?')[0])}"
+
+        if !File.exists?("#{$directory}/#{filename}-meta.yml")
+          puts "Saving metadata for #{url} to #{filename}-meta.yml"
+          File.open("#{$directory}/#{filename}-meta.yml","w") do |f|
+            f.write(photo.to_yaml)
+          end
+        end
+
         begin
-          file = Mechanize.new.get(url)
-          filename = File.basename(file.uri.to_s.split('?')[0])
-          if File.exists?("#{$directory}/#{filename}") and Mechanize.new.head(url)["content-length"].to_i === File.stat("#{$directory}/#{filename}").size.to_i
-            puts "Already have #{url}"
-          else
-            puts "Saving photo #{url}"
-            file.save_as("#{$directory}/#{filename}")
+          if attempt > 0
+            puts "Retrying..."
           end
 
-        rescue Mechanize::ResponseCodeError
-          puts "Error getting file, #{$!}"
+          if File.exists?("#{$directory}/#{filename}") and Mechanize.new.head(url)["content-length"].to_i === File.stat("#{$directory}/#{filename}").size.to_i
+            puts "Already saved photo #{url}"
+          else
+            file = Mechanize.new.get(url)
+            puts "Saving image #{url} to #{filename}"
+            file.save_as("#{$directory}/#{filename}")
+          end
+        rescue StandardError
+          puts "Error getting file #{url}, #{$!}"
+          attempt += 1
+          retry if attempt <= 3
         end
       }
     end
@@ -111,13 +138,25 @@ def download(image_urls)
   end
 end
 
-def save_image(image_urls)
+def process(photos)
   if $output_file
-    image_urls.each do |url|
-      $f_urllist.write("#{url}\n")
+    photos.each do |photo|
+      $f_urllist.write("#{photo[:url]}\n")
     end
   else
-    download(image_urls)
+    download(photos)
+  end
+end
+
+def best_url(photo)
+  if !photo["url_o"].nil?
+      photo["url_o"]
+  elsif !FlickRaw.url_b(photo).nil?
+      FlickRaw.url_b(photo)
+  elsif !FlickRaw.url_c(photo).nil?
+      FlickRaw.url_c(photo)
+  elsif !FlickRaw.url_z(photo).nil?
+      FlickRaw.url_z(photo)
   end
 end
 
@@ -142,7 +181,7 @@ flickr_regex = /http[s]?:\/\/(?:www|secure).flickr.com\/(groups|photos)\/[\w@-]+
 # photo_single_regex0 = /http[s]?:\/\/(?:www|secure).flickr.com\/photos\/([\w@]+)\/sets\/(\d{17})\/with\/(\d{10})[\/]?$/
 # photo_single_regex1 = /http[s]?:\/\/(?:www|secure).flickr.com\/photos\/([\w@]+)\/(\d{10})[\/]?$/
 
-image_urls = []
+photos_outstanding = []
 
 $url_list.each do |url|
   if match = url.match(flickr_regex)
@@ -170,23 +209,15 @@ $url_list.each do |url|
         photo_list = flickr.people.getPhotos( :user_id => f_user_id,
                                               :safe_search => "3",
                                               :extras => "url_o",
-                                              :page => f_current_page,
+                                              :page => f_current_page.to_s,
                                               :per_page => "500")
         photo_list.each do |photo|
-          if !photo["url_o"].nil?
-            image_urls.push(photo["url_o"])
-          elsif !FlickRaw.url_b(photo).nil?
-            image_urls.push(FlickRaw.url_b(photo))
-          elsif !FlickRaw.url_c(photo).nil?
-            image_urls.push(FlickRaw.url_c(photo))
-          elsif !FlickRaw.url_z(photo).nil?
-            image_urls.push(FlickRaw.url_z(photo))
-          end
+          photos_outstanding.push(photo)
         end
 
         f_current_page += 1
-        save_image(image_urls)
-        image_urls.clear
+        process(photos_outstanding)
+        photos_outstanding.clear
       end
 
     ##### Get photo list of photoset #####
@@ -200,25 +231,17 @@ $url_list.each do |url|
       while f_current_page <= f_page_count
         photo_list = flickr.photosets.getPhotos(:photoset_id => f_photoset_id,
                                                 :extras => "url_o",
-                                                :page => f_current_page,
+                                                :page => f_current_page.to_s,
                                                 :per_page => "500")
         photo_list = photo_list["photo"]
 
         photo_list.each do |photo|
-          if !photo["url_o"].nil?
-            image_urls.push(photo["url_o"])
-          elsif !FlickRaw.url_b(photo).nil?
-            image_urls.push(FlickRaw.url_b(photo))
-          elsif !FlickRaw.url_c(photo).nil?
-            image_urls.push(FlickRaw.url_c(photo))
-          elsif !FlickRaw.url_z(photo).nil?
-            image_urls.push(FlickRaw.url_z(photo))
-          end
+          photos_outstanding.push(photo)
         end
 
         f_current_page += 1
-        save_image(image_urls)
-        image_urls.clear
+        process(photos_outstanding)
+        photos_outstanding.clear
       end
 
     ##### Get photo list of user favorites #####
@@ -231,26 +254,20 @@ $url_list.each do |url|
       fav_page_count   = (fav_photo_count.to_i / 500.0).ceil
       fav_current_page = 1
 
+      puts "#{fav_photo_count.to_i} favourites"
       while fav_current_page <= fav_page_count
+        puts "Getting favourite page #{fav_current_page}"
         photo_list = flickr.favorites.getList(:user_id => fav_user_id,
-                                              :extras => "url_o",
-                                              :page => f_current_page,
+                                              :extras => "url_o,date_upload,date_taken,owner_name,tags",
+                                              :page => fav_current_page.to_s,
                                               :per_page => "500")
         photo_list.each do |photo|
-          if !photo["url_o"].nil?
-            image_urls.push(photo["url_o"])
-          elsif !FlickRaw.url_b(photo).nil?
-            image_urls.push(FlickRaw.url_b(photo))
-          elsif !FlickRaw.url_c(photo).nil?
-            image_urls.push(FlickRaw.url_c(photo))
-          elsif !FlickRaw.url_z(photo).nil?
-            image_urls.push(FlickRaw.url_z(photo))
-          end
+            photos_outstanding.push(photo)
         end
-
+        
         fav_current_page += 1
-        save_image(image_urls)
-        image_urls.clear
+        process(photos_outstanding)
+        photos_outstanding.clear
       end
 
     ##### Get individual photo url #####
@@ -260,17 +277,9 @@ $url_list.each do |url|
       else
         photo = flickr.photos.getInfo(:photo_id => match_group4)
       end
-      if !photo["url_o"].nil?
-        image_urls.push(photo["url_o"])
-      elsif !FlickRaw.url_b(photo).nil?
-        image_urls.push(FlickRaw.url_b(photo))
-      elsif !FlickRaw.url_c(photo).nil?
-        image_urls.push(FlickRaw.url_c(photo))
-      elsif !FlickRaw.url_z(photo).nil?
-        image_urls.push(FlickRaw.url_z(photo))
-      end
-      save_image(image_urls)
-      image_urls.clear
+      photos_outstanding.push(photo)
+      process(photos_outstanding)
+      photos_outstanding.clear
     end
   ##### Get individual photo url #####
   elsif match_group1.eql?("groups")
@@ -289,20 +298,12 @@ $url_list.each do |url|
       photo_list = photo_list["photo"]
 
       photo_list.each do |photo|
-        if !photo["url_o"].nil?
-          image_urls.push(photo["url_o"])
-        elsif !FlickRaw.url_b(photo).nil?
-          image_urls.push(FlickRaw.url_b(photo))
-        elsif !FlickRaw.url_c(photo).nil?
-          image_urls.push(FlickRaw.url_c(photo))
-          elsif !FlickRaw.url_z(photo).nil?
-            image_urls.push(FlickRaw.url_z(photo))
-        end
+        photos_outstanding.push(photo)
       end
 
       g_current_page += 1
-      save_image(image_urls)
-      image_urls.clear
+      process(photos_outstanding)
+      photos_outstanding.clear
     end
 
   end
