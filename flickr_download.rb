@@ -26,7 +26,7 @@ FlickRaw.check_certificate = ENV['HTTPS_CHECK_CERT'].nil? || !ENV['HTTPS_CHECK_C
 
 begin
   login = flickr.test.login
-  puts "Authentication succeeded: Flickr API requests will be as user #{login.username}"
+  puts "Authentication succeeded: Flickr API requests will be performed as user #{login.username}"
 rescue StandardError => e
   puts "Authentication failed: the specified key, token and secrets were rejected: #{e.msg}"
   exit
